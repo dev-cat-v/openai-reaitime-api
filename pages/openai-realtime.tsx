@@ -59,11 +59,11 @@ export default function Chat() {
       <div className="mt-4">
         {isChatting ? (
           <button onClick={stopChat} className="px-4 py-2 bg-red-500 text-white rounded">
-            ⏹️ チャット終了
+            チャット終了
           </button>
         ) : (
           <button onClick={startChat} className="px-4 py-2 bg-blue-500 text-white rounded">
-            🎙️ チャット開始
+            チャット開始
           </button>
         )}
       </div>
