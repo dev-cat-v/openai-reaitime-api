@@ -1,70 +1,174 @@
-# With Docker
+# Next.js + OpenAI Realtime API テンプレート
 
-This examples shows how to use Docker with Next.js based on the [deployment documentation](https://nextjs.org/docs/deployment#docker-image). Additionally, it contains instructions for deploying to Google Cloud Run. However, you can use any container-based deployment host.
+## 🎙️ リアルタイム音声チャット
+このテンプレートは、Next.jsで構築したフロントエンドから、OpenAIのRealtime API（WebRTC）を使って**音声チャット**を実現する最小構成のプロジェクトです。
 
-## How to use
-
-Execute [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app) with [npm](https://docs.npmjs.com/cli/init), [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/), or [pnpm](https://pnpm.io) to bootstrap the example:
-
-```bash
-npx create-next-app --example with-docker nextjs-docker
+## 環境構築(ご自身の環境で位置から構築する場合)
+### 1 Next.jsプロジェクトを作成します。
+```shell
+npx create-next-app --example with-docker {your project name}
 ```
 
-```bash
-yarn create next-app --example with-docker nextjs-docker
+### 2 GitHub でリポジトリを作成し、ローカルの内容をPushします。（任意）
+```shell
+cd {your project name}
+git remote add origin https://github.com/{your git account id}/{your git repository url}
+git branch -M main
+git push -u origin main
 ```
 
-```bash
-pnpm create next-app --example with-docker nextjs-docker
+### 3 Tailwind-CSS をインストールします。（任意）
+- Tailwind CSSをインストールする
+以下コマンドを実行します。
+```shell
+npm install tailwindcss @tailwindcss/postcss postcss
 ```
 
-## Using Docker
-
-1. [Install Docker](https://docs.docker.com/get-docker/) on your machine.
-1. Build your container: `docker build -t nextjs-docker .`.
-1. Run your container: `docker run -p 3000:3000 nextjs-docker`.
-
-You can view your images created with `docker images`.
-
-### In existing projects
-
-To add support for Docker to an existing project, just copy the [`Dockerfile`](https://github.com/vercel/next.js/blob/canary/examples/with-docker/Dockerfile) into the root of the project and add the following to the `next.config.js` file:
-
-```js
-// next.config.js
-module.exports = {
-  // ... rest of the configuration.
-  output: "standalone",
-};
+- PostCSS設定にTailwindを追加する
+Projectのrootディレクトリに、postcss.config.mjsを作成し、以下設定値を記述します。
+```shell
+export default {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  }
+}
 ```
 
-This will build the project as a standalone app inside the Docker image.
+- Tailwind CSSをインポートする
+globals.cssに、以下設定を行います。
+```
+@import "tailwindcss";
+```
 
-## Deploying to Google Cloud Run
+### 4 .env.local にAPIキー設定
+```env
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
 
-1. Install the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) so you can use `gcloud` on the command line.
-1. Run `gcloud auth login` to log in to your account.
-1. [Create a new project](https://cloud.google.com/run/docs/quickstarts/build-and-deploy) in Google Cloud Run (e.g. `nextjs-docker`). Ensure billing is turned on.
-1. Build your container image using Cloud Build: `gcloud builds submit --tag gcr.io/PROJECT-ID/helloworld --project PROJECT-ID`. This will also enable Cloud Build for your project.
-1. Deploy to Cloud Run: `gcloud run deploy --image gcr.io/PROJECT-ID/helloworld --project PROJECT-ID --platform managed --allow-unauthenticated`. Choose a region of your choice.
+## リソースの配置
+### /pages/api/openai-realtime/init.ts
+OpenAIにエフェメラルキーをリクエストするAPI。
 
-   - You will be prompted for the service name: press Enter to accept the default name, `helloworld`.
-   - You will be prompted for [region](https://cloud.google.com/run/docs/quickstarts/build-and-deploy#follow-cloud-run): select the region of your choice, for example `us-central1`.
+```typescript
+import type { NextApiRequest, NextApiResponse } from 'next';
 
-## Running Locally
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
-First, run the development server:
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'API Key not found' });
+  }
 
+  const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-realtime-preview-2024-12-17",
+      voice: "verse",
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Failed to create session:', errorText);
+    return res.status(response.status).json({ error: 'Failed to create session', details: errorText });
+  }
+
+  const data = await response.json();
+  res.status(200).json({ ephemeralKey: data.client_secret.value });
+}
+```
+
+### /app/pages/openai-realtime.tsx
+音声チャットのUIとWebRTC接続処理。
+```typescript
+import { useState, useRef } from 'react';
+
+export default function Chat() {
+  const [isChatting, setIsChatting] = useState(false);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+
+  const startChat = async () => {
+    const res = await fetch('/api/openai-realtime/init');
+    const { ephemeralKey } = await res.json();
+
+    const pc = new RTCPeerConnection();
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+    const audioEl = document.createElement('audio');
+    audioEl.autoplay = true;
+    pc.ontrack = (e) => audioEl.srcObject = e.streams[0];
+
+    const dc = pc.createDataChannel('oai-events');
+    dataChannelRef.current = dc;
+
+    dc.onmessage = () => {};
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ephemeralKey}`,
+        'Content-Type': 'application/sdp',
+      },
+      body: offer.sdp,
+    });
+
+    const sdpText = await sdpResponse.text();
+    const answer: RTCSessionDescriptionInit = {
+      type: 'answer',
+      sdp: sdpText,
+    };
+    await pc.setRemoteDescription(answer);
+
+    peerConnection.current = pc;
+    setIsChatting(true);
+  };
+
+  const stopChat = () => {
+    peerConnection.current?.close();
+    dataChannelRef.current?.close();
+    setIsChatting(false);
+  };
+
+  return (
+    <div className="p-4">
+      <h1 className="text-xl font-bold">リアルタイム音声チャット</h1>
+
+      <div className="mt-4">
+        {isChatting ? (
+          <button onClick={stopChat} className="px-4 py-2 bg-red-500 text-white rounded">
+            ⏹️ チャット終了
+          </button>
+        ) : (
+          <button onClick={startChat} className="px-4 py-2 bg-blue-500 text-white rounded">
+            🎙️ チャット開始
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+## 動作確認
+### 開発サーバー起動
 ```bash
 npm run dev
-# or
-yarn dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `pages/index.js`. The page auto-updates as you edit the file.
-
-[API routes](https://nextjs.org/docs/api-routes/introduction) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.js`.
-
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/api-routes/introduction) instead of React pages.
+### ブラウザでアクセス
+```
+http://localhost:3000/openai-realtime
+```
